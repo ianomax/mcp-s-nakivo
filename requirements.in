@@ -1,0 +1,13 @@
+# Dipendenze dirette: cio' che il codice importa. requirements.txt e' GENERATO
+# da questo file, non si modifica a mano:
+#
+#   uv pip compile requirements.in --python-version 3.14 --python-platform linux -o requirements.txt
+#
+# Regola: se il codice lo importa, sta qui. Anche quando arriverebbe comunque
+# come dipendenza di un'altra.
+
+fastmcp-slim[server]   # main_server.py -- il server MCP e il trasporto HTTP
+httpx2                 # ars_client.py -- il client HTTP verso l'API di ARS
+starlette              # main_server.py -- JSONResponse della rotta /health
+pydantic-settings      # settings.py
+python-json-logger     # logger_config.py

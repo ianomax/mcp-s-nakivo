@@ -1,0 +1,27 @@
+# Virtual Environment
+venv/
+.venv/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python cache
+__pycache__/
+*.pyc
+
+# IDE specific files
+.idea/
+.vscode/
+
+# Appunti di lavoro, non vanno nel repository
+CLAUDE.md
+
+# Strumenti di verifica locali, fuori dal repository per scelta: il finto ARS
+# e lo script che chiama i tool senza passare da un LLM.
+tests/
+requirements-dev.in
+
+# La documentazione delle API di ARS: resta fuori dal repository.
+api_nakivo_doc.txt
