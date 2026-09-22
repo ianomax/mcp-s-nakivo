@@ -1,0 +1,47 @@
+services:
+  app:
+    build: .
+    image: mcp-s-nakivo
+    container_name: mcp-s-nakivo
+    # Nessuna porta pubblicata sull'host, di proposito: il server si raggiunge
+    # solo da dentro mcp-network, cioe' dal client. Chi lo raggiunge legge i
+    # backup di qualunque azienda passando un company_id, e l'unica difesa e'
+    # MCP_API_KEY.
+    volumes:
+      # Ripiego se TZ non fosse impostata: prende il fuso dell'host.
+      - /etc/localtime:/etc/localtime:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Il fuso del container e' quello che esce in `ora_attuale`, cioe' l'ora
+      # che il modello riferisce all'utente. Senza, un container parte in UTC
+      # e dice due ore di meno -- misurato. Le eta' dei backup invece non
+      # cambiano: si calcolano fra due date che hanno gia' il loro fuso.
+      - TZ=${TZ:-Europe/Rome}
+      # Una variabile scritta nel .env ma non elencata qui NON entra nel
+      # container: e' l'errore che aspetta chiunque aggiunga configurazione
+      # guardando solo settings.py.
+      - ARS_BASE_URL=${ARS_BASE_URL}
+      - ARS_API_TOKEN=${ARS_API_TOKEN}
+      - ARS_TIMEOUT=${ARS_TIMEOUT:-120}
+      - MCP_API_KEY=${MCP_API_KEY}
+      # Dentro il container si ascolta su tutte le interfacce: la rete Docker
+      # e' gia' il confine.
+      - HOST=0.0.0.0
+      - PORT=${PORT:-8010}
+      - MCP_PATH=${MCP_PATH:-/mcp}
+    restart: unless-stopped
+    networks:
+      - mcp-network
+    dns:
+      - 192.168.1.4
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${PORT:-8010}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+networks:
+  mcp-network:
+    external: true

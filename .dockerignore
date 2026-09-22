@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pytest_cache/
+
+.venv/
+venv/
+.env
+.env.*
+*.pem
+*.key
+
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store
+
+# Il finto ARS e gli script di prova non entrano nell'immagine.
+tests/
+requirements-dev.in
+
+# Contiene il token in chiaro.
+api_nakivo_doc.txt
