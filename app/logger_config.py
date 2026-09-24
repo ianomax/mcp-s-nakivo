@@ -4,10 +4,7 @@ from pythonjsonlogger.json import JsonFormatter
 
 
 def setup_logging():
-    """
-    Configura il logger per stampare in formato JSON su stdout.
-
-    """
+    """Configura il logger per stampare in formato JSON su stdout."""
     logger = logging.getLogger()
 
     # Controllo di sicurezza: se ci sono già handler, non se ne aggiungono

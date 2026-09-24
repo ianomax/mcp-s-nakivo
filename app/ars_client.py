@@ -33,10 +33,9 @@ MSG_TROPPE = "Troppe richieste al servizio dei backup: riprova fra un minuto."
 MSG_TIMEOUT = "Il servizio dei backup non risponde: la lettura da Nakivo sta impiegando troppo."
 
 # ARS risponde 422 in due casi opposti: l'azienda non ha un controllo Nakivo
-# (normale, capita a quasi tutte) e il corpo che abbiamo mandato e' sbagliato
-# (un bug nostro). L'unico modo per distinguerli e' il messaggio. Il confronto
-# e' sul testo di ARS: se un giorno cambia si ricade sulla frase generica,
-# che e' il comportamento di prima, non su un errore.
+# (il caso normale per quasi tutte) oppure il corpo inviato e' sbagliato. Li
+# distingue solo il messaggio: se ARS cambia quel testo si ricade sulla frase
+# generica, non su un errore.
 TESTO_NON_CONFIGURATO = "nakivo backup check not found"
 
 
