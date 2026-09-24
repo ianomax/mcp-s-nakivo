@@ -51,7 +51,8 @@ async def ciclo_di_vita(_server: FastMCP):
     # fuso sbagliato si vede qui, non dalle risposte.
     logger.info(
         f"Server MCP Nakivo avviato. ARS: {settings.ARS_BASE_URL}. "
-        f"Ora locale: {normalizza.adesso().isoformat(timespec='minutes')}"
+        f"Ora locale: {normalizza.adesso().isoformat(timespec='minutes')}. "
+        f"Backup da controllare oltre {settings.SOGLIA_BACKUP_ORE:g} ore"
     )
     yield
     await ars_client.chiudi()
@@ -106,6 +107,14 @@ async def nakivo_stato_backup(company_id: int) -> dict:
     È il tool giusto per la maggior parte delle domande sui backup, comprese
     quelle su un singolo backup o su un singolo repository.
 
+    **In testa alla risposta c'è già pronto quello che va segnalato.**
+    `da_controllare` sono i backup il cui ultimo punto di ripristino è più
+    vecchio di `soglia_ore` ore, o che non ne hanno nessuno;
+    `repository_vuoti` sono i repository senza backup, e
+    `repository_con_backup` quanti repository ne hanno. Riportali sempre, in
+    ogni risposta sullo stato dei backup, anche breve, così come sono: non
+    sceglierli di nuovo dall'elenco. Se `da_controllare` è vuoto, dillo.
+
     **Un backup con lo stesso nome sta spesso in più repository, con date
     molto diverse.** `nomi_in_piu_repository` dice quali nomi sono in questo
     caso e in quanti repository stanno: se ti chiedono di uno di quei nomi,
@@ -134,7 +143,7 @@ async def nakivo_stato_backup(company_id: int) -> dict:
     """
     logger.info(f"stato dei backup, azienda {company_id}")
     data = await _chiama("/api/nakivo/backup-status", {"company_id": company_id})
-    return normalizza.stato(data)
+    return normalizza.stato(data, soglia_ore=settings.SOGLIA_BACKUP_ORE)
 
 
 @mcp.tool(annotations=SOLA_LETTURA)

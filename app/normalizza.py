@@ -1,11 +1,12 @@
 # app/normalizza.py
 """Da come risponde ARS a come conviene leggerlo a un modello.
 
-Tre cose che un modello fa male: i conti con le date, il conteggio di un
-elenco lungo e la lettura di una struttura che cambia forma. Qui l'eta' dell'ultimo punto di ripristino e' gia'
-calcolata e scritta anche in lettere (`da_quanto`), e `data` viene accettata
-sia come lista sia come oggetto con chiavi "0", "1", ...  I totali sono
-contati qui.
+Un modello sbaglia facilmente i conti con le date, il conteggio di un elenco
+lungo, la lettura di una struttura che cambia forma e la scelta di cosa
+segnalare. Per questo qui l'eta' dell'ultimo punto di ripristino e' gia'
+calcolata e scritta anche in lettere (`da_quanto`), i totali sono contati, i
+backup da controllare e i repository vuoti sono gia' scelti, e `data` si
+accetta sia come lista sia come oggetto con chiavi "0", "1", ...
 
 Funzioni pure: prendono la risposta di ARS e l'istante, e restituiscono un
 dizionario.
@@ -49,13 +50,20 @@ def _quando(iso: Any) -> Optional[datetime]:
     return quando.astimezone() if quando.tzinfo is None else quando
 
 
+def _leggibile(quando: datetime) -> str:
+    """La data come la scrive una persona, nell'ora locale: "18/09/2026 09:00".
+
+    In ISO il modello la ricopierebbe tale e quale, anche nei rapportini.
+    """
+    return quando.astimezone().strftime("%d/%m/%Y %H:%M")
+
+
 def _da_quanto(ore: Optional[float]) -> str:
     """L'eta' in lettere, perche' il modello non faccia sottrazioni fra date.
 
-    Riceve lo stesso numero gia' arrotondato che finisce in `ore_fa`: se qui
-    si troncasse il valore pieno, le due chiavi direbbero cose diverse --
-    3,98 ore diventava `ore_fa: 4.0` ma `da_quanto: "3 ore"`, e il modello
-    ha scritto "4.0 (da 3 ore)". Misurato il 22/09/2026.
+    Riceve lo stesso numero gia' arrotondato che finisce in `ore_fa`:
+    troncando il valore pieno, le due chiavi direbbero cose diverse (3,98 ore
+    darebbe `ore_fa: 4.0` e `da_quanto: "3 ore"`).
     """
     if ore is None:
         return "mai"
@@ -76,17 +84,16 @@ def _da_quanto(ore: Optional[float]) -> str:
 def _backup(riga: dict, ora: datetime, repository: Optional[str] = None) -> dict:
     """Una riga di backup, che si deve poter leggere da sola.
 
-    Il nome del repository e' ripetuto dentro ogni riga anche quando le righe
-    sono gia' raggruppate per repository. Non e' ridondanza inutile: lo stesso
-    backup esiste in piu' repository con date molto diverse -- `nb-daniele` di
-    Opero era di un'ora in uno e di quattro giorni in un altro -- e un modello
-    che appiattisce l'elenco attribuisce la data al repository sbagliato.
+    Il nome del repository e' ripetuto in ogni riga anche quando le righe sono
+    gia' raggruppate per repository: lo stesso backup sta spesso in piu'
+    repository con date molto diverse, e un modello che appiattisce l'elenco
+    attribuirebbe la data al repository sbagliato.
     """
     quando = _quando(riga.get("lastSavePointCreatedDate"))
     ore = None
     if quando is not None:
-        # `+ 0.0` toglie il meno da -0.0, che e' quello che esce quando
-        # l'orologio di Nakivo e' avanti di un minuto sul nostro.
+        # `+ 0.0` toglie il meno da -0.0, che esce quando l'orologio di Nakivo
+        # e' appena avanti rispetto a quello del server.
         ore = round((ora - quando).total_seconds() / 3600, 1) + 0.0
     voce = {"nome": riga.get("name")}
     if repository is not None:
@@ -94,7 +101,10 @@ def _backup(riga: dict, ora: datetime, repository: Optional[str] = None) -> dict
     voce.update(
         {
             "job": riga.get("jobName"),
-            "ultimo_punto": riga.get("lastSavePointCreatedDate"),
+            # Una data che non si riesce a leggere passa com'e'.
+            "ultimo_punto": (
+                _leggibile(quando) if quando else riga.get("lastSavePointCreatedDate")
+            ),
             "ore_fa": ore,
             "da_quanto": _da_quanto(ore),
         }
@@ -105,14 +115,12 @@ def _backup(riga: dict, ora: datetime, repository: Optional[str] = None) -> dict
 def _omonimi(repository: list[dict]) -> dict[str, int]:
     """Quali nomi stanno in piu' di un repository, e in quanti.
 
-    Sta nella risposta perche' il modello, chiesto di un backup per nome,
-    ne riporta uno solo anche avendo davanti tutte le righe: la domanda
-    e' al singolare e lui si ferma alla prima. Con l'elenco davanti sa
-    prima di cercare che quel nome va cercato piu' volte.
+    Chiesto di un backup per nome, il modello tende a fermarsi alla prima
+    riga che trova: con questo elenco sa in anticipo che quel nome va cercato
+    piu' volte.
 
-    Si contano i repository, non le righe: su Ready Net lo stesso backup
-    compare due volte *dentro* lo stesso repository, e quello non e' un
-    omonimo, e' un doppione dei dati di partenza.
+    Si contano i repository, non le righe: lo stesso nome ripetuto dentro un
+    solo repository non e' un omonimo.
     """
     dove: dict[str, set] = {}
     for riga in repository:
@@ -122,8 +130,31 @@ def _omonimi(repository: list[dict]) -> dict[str, int]:
     return {nome: len(posti) for nome, posti in dove.items() if len(posti) > 1}
 
 
-def stato(data: Any, ora: Optional[datetime] = None) -> dict:
-    """La risposta di `backup-status`: i repository con dentro i loro backup."""
+def _da_controllare(repository: list[dict], soglia_ore: float) -> list[dict]:
+    """I backup da segnalare: l'ultimo punto e' piu' vecchio della soglia, o non c'e'.
+
+    Arrivano gia' scelti perche' il modello, riassumendo un elenco lungo, li
+    perde. Prima quelli senza punto di ripristino, poi dal piu' vecchio.
+    """
+    vecchi = [
+        voce
+        for riga in repository
+        for voce in riga["backup"]
+        if voce["ore_fa"] is None or voce["ore_fa"] > soglia_ore
+    ]
+    vecchi.sort(key=lambda voce: (voce["ore_fa"] is not None, -(voce["ore_fa"] or 0.0)))
+    return [
+        {chiave: voce.get(chiave) for chiave in ("nome", "repository", "ultimo_punto", "da_quanto")}
+        for voce in vecchi
+    ]
+
+
+def stato(data: Any, ora: Optional[datetime] = None, soglia_ore: float = 24.0) -> dict:
+    """La risposta di `backup-status`: i repository con dentro i loro backup.
+
+    In testa, prima dell'elenco, quello che va segnalato: i backup da
+    controllare secondo `soglia_ore` e i repository vuoti.
+    """
     ora = ora or adesso()
     repository = [
         {
@@ -136,10 +167,15 @@ def stato(data: Any, ora: Optional[datetime] = None) -> dict:
         }
         for riga in _righe(data)
     ]
+    vuoti = [r["nome"] for r in repository if r["totale_backup"] == 0]
     return {
         "ora_attuale": ora.isoformat(timespec="seconds"),
         "totale_repository": len(repository),
         "totale_backup": sum(r["totale_backup"] for r in repository),
+        "repository_con_backup": len(repository) - len(vuoti),
+        "repository_vuoti": vuoti,
+        "soglia_ore": soglia_ore,
+        "da_controllare": _da_controllare(repository, soglia_ore),
         "nomi_in_piu_repository": _omonimi(repository),
         "repository": repository,
     }

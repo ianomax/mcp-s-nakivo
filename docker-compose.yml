@@ -13,17 +13,17 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       # Il fuso del container e' quello che esce in `ora_attuale`, cioe' l'ora
-      # che il modello riferisce all'utente. Senza, un container parte in UTC
-      # e dice due ore di meno -- misurato. Le eta' dei backup invece non
-      # cambiano: si calcolano fra due date che hanno gia' il loro fuso.
+      # che il modello riferisce all'utente: senza, il container parte in UTC.
+      # Le eta' dei backup non dipendono dal fuso: si calcolano fra due date
+      # che hanno gia' il loro.
       - TZ=${TZ:-Europe/Rome}
       # Una variabile scritta nel .env ma non elencata qui NON entra nel
-      # container: e' l'errore che aspetta chiunque aggiunga configurazione
-      # guardando solo settings.py.
+      # container: ogni impostazione nuova di settings.py va aggiunta anche qui.
       - ARS_BASE_URL=${ARS_BASE_URL}
       - ARS_API_TOKEN=${ARS_API_TOKEN}
       - ARS_TIMEOUT=${ARS_TIMEOUT:-120}
       - MCP_API_KEY=${MCP_API_KEY}
+      - SOGLIA_BACKUP_ORE=${SOGLIA_BACKUP_ORE:-24}
       # Dentro il container si ascolta su tutte le interfacce: la rete Docker
       # e' gia' il confine.
       - HOST=0.0.0.0
