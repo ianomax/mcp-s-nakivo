@@ -4,9 +4,10 @@
 Un modello sbaglia facilmente i conti con le date, il conteggio di un elenco
 lungo, la lettura di una struttura che cambia forma e la scelta di cosa
 segnalare. Per questo qui l'eta' dell'ultimo punto di ripristino e' gia'
-calcolata e scritta anche in lettere (`da_quanto`), i totali sono contati, i
-backup da controllare e i repository vuoti sono gia' scelti, e `data` si
-accetta sia come lista sia come oggetto con chiavi "0", "1", ...
+calcolata e scritta anche in lettere (`da_quanto`), i totali sono contati, le
+righe identiche sono unite con il loro numero, i backup da controllare e i
+repository vuoti sono gia' scelti, e `data` si accetta sia come lista sia come
+oggetto con chiavi "0", "1", ...
 
 Funzioni pure: prendono la risposta di ARS e l'istante, e restituiscono un
 dizionario.
@@ -15,6 +16,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Optional
+
+from .exceptions import RepositoryNonTrovato
 
 # Dentro `data` ARS infila anche l'output del comando, in HTML. Non e' un
 # repository e non deve arrivare al modello.
@@ -81,6 +84,24 @@ def _da_quanto(ore: Optional[float]) -> str:
     return testo
 
 
+def _uniche(righe: list[dict]) -> list[tuple[dict, int]]:
+    """Le righe con lo stesso nome, job e ultimo punto, unite: ognuna col suo numero.
+
+    Nakivo ripete la stessa riga per elementi diversi che ARS non distingue
+    fra loro. Riassumendo un elenco lungo il modello raggruppa da se' le righe
+    uguali e le conta male: qui arrivano gia' contate. L'ordine e' quello
+    della prima comparsa.
+    """
+    conteggi: dict[tuple, list] = {}
+    for riga in righe:
+        chiave = (riga.get("name"), riga.get("jobName"), riga.get("lastSavePointCreatedDate"))
+        if chiave in conteggi:
+            conteggi[chiave][1] += 1
+        else:
+            conteggi[chiave] = [riga, 1]
+    return [(riga, quante) for riga, quante in conteggi.values()]
+
+
 def _backup(riga: dict, ora: datetime, repository: Optional[str] = None) -> dict:
     """Una riga di backup, che si deve poter leggere da sola.
 
@@ -110,6 +131,21 @@ def _backup(riga: dict, ora: datetime, repository: Optional[str] = None) -> dict
         }
     )
     return voce
+
+
+def _backup_uniti(righe: list[dict], ora: datetime, repository: Optional[str] = None) -> list[dict]:
+    """Le righe di backup di un repository, con quelle identiche unite.
+
+    `righe` c'e' solo quando vale piu' di 1, cosi' le righe singole restano
+    come sono.
+    """
+    elenco = []
+    for riga, quante in _uniche(righe):
+        voce = _backup(riga, ora, repository)
+        if quante > 1:
+            voce["righe"] = quante
+        elenco.append(voce)
+    return elenco
 
 
 def _omonimi(repository: list[dict]) -> dict[str, int]:
@@ -143,8 +179,9 @@ def _da_controllare(repository: list[dict], soglia_ore: float) -> list[dict]:
         if voce["ore_fa"] is None or voce["ore_fa"] > soglia_ore
     ]
     vecchi.sort(key=lambda voce: (voce["ore_fa"] is not None, -(voce["ore_fa"] or 0.0)))
+    chiavi = ("nome", "repository", "ultimo_punto", "da_quanto", "righe")
     return [
-        {chiave: voce.get(chiave) for chiave in ("nome", "repository", "ultimo_punto", "da_quanto")}
+        {chiave: voce[chiave] for chiave in chiavi if chiave in voce}
         for voce in vecchi
     ]
 
@@ -158,12 +195,10 @@ def stato(data: Any, ora: Optional[datetime] = None, soglia_ore: float = 24.0) -
     ora = ora or adesso()
     repository = [
         {
-            "id": riga.get("id"),
             "nome": riga.get("name"),
+            # Il totale conta le righe di ARS, anche quelle poi unite.
             "totale_backup": len(_righe(riga.get("backups"))),
-            "backup": [
-                _backup(b, ora, riga.get("name")) for b in _righe(riga.get("backups"))
-            ],
+            "backup": _backup_uniti(_righe(riga.get("backups")), ora, riga.get("name")),
         }
         for riga in _righe(data)
     ]
@@ -181,21 +216,47 @@ def stato(data: Any, ora: Optional[datetime] = None, soglia_ore: float = 24.0) -
     }
 
 
-def repository(data: Any) -> dict:
-    """La risposta di `repositories/all`: solo id e nome."""
+def cerca_repository(data: Any, nome: str) -> dict:
+    """Fra i repository di `repositories/all`, quello col nome dato: id e nome.
+
+    Il confronto ignora maiuscole e spazi ai bordi. Se nessun nome e'
+    identico vale quello che contiene il testo cercato, purche' sia uno solo:
+    "nasbackup.opero" indica "nasbackup.opero.local", "nasbackup" no se i
+    repository che lo contengono sono due. Altrimenti `RepositoryNonTrovato`,
+    con i nomi fra cui scegliere.
+    """
     elenco = [
-        {"id": riga.get("id"), "nome": riga.get("name")} for riga in _righe(data)
+        {"id": riga.get("id"), "nome": riga.get("name")}
+        for riga in _righe(data)
+        if isinstance(riga.get("name"), str)
     ]
-    return {"totale_repository": len(elenco), "repository": elenco}
+    if not elenco:
+        raise RepositoryNonTrovato("Per questa azienda non risulta nessun repository Nakivo.")
+    cercato = nome.strip().casefold()
+    identici = [r for r in elenco if r["nome"].strip().casefold() == cercato]
+    if len(identici) == 1:
+        return identici[0]
+    simili = [r for r in elenco if cercato and cercato in r["nome"].casefold()]
+    if len(simili) == 1:
+        return simili[0]
+    if len(simili) > 1:
+        nomi = ", ".join(r["nome"] for r in simili)
+        raise RepositoryNonTrovato(
+            f"\"{nome}\" corrisponde a più repository: {nomi}. Serve il nome completo."
+        )
+    nomi = ", ".join(r["nome"] for r in elenco)
+    raise RepositoryNonTrovato(
+        f"Nessun repository dell'azienda si chiama \"{nome}\". I repository sono: {nomi}."
+    )
 
 
-def backup(data: Any, repository_id: int, ora: Optional[datetime] = None) -> dict:
+def backup(data: Any, repository: str, ora: Optional[datetime] = None) -> dict:
     """La risposta di `repositories/backups`: i backup di un repository."""
     ora = ora or adesso()
-    righe = [_backup(riga, ora) for riga in _righe(data)]
+    righe = _righe(data)
     return {
         "ora_attuale": ora.isoformat(timespec="seconds"),
-        "repository_id": repository_id,
+        "repository": repository,
         "totale_backup": len(righe),
-        "backup": righe,
+        "backup": _backup_uniti(righe, ora, repository),
     }

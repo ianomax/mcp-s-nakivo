@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 import httpx2
 
+from .exceptions import ErroreArs
 from .settings import settings
 
 logger = logging.getLogger("ARS")
@@ -37,10 +38,6 @@ MSG_TIMEOUT = "Il servizio dei backup non risponde: la lettura da Nakivo sta imp
 # distingue solo il messaggio: se ARS cambia quel testo si ricade sulla frase
 # generica, non su un errore.
 TESTO_NON_CONFIGURATO = "nakivo backup check not found"
-
-
-class ErroreArs(Exception):
-    """Un guasto gia' tradotto in una frase da mostrare all'utente."""
 
 
 _client: Optional[httpx2.AsyncClient] = None

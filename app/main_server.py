@@ -1,5 +1,5 @@
 # app/main_server.py
-"""Il server MCP: tre tool che leggono i backup Nakivo di un'azienda.
+"""Il server MCP: due tool che leggono i backup Nakivo di un'azienda.
 
 `company_id` e' un parametro di ogni tool, ma **non lo sceglie il modello**:
 lo mette mcp-c-ars a ogni chiamata, prendendolo dalla richiesta che arriva da
@@ -14,8 +14,7 @@ si pubblica fuori dalla rete interna e le chiamate devono portare
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
-from typing import Any
+from contextlib import asynccontextmanager, contextmanager
 
 import fastmcp
 from fastmcp import FastMCP
@@ -24,7 +23,7 @@ from fastmcp.server.auth.providers.jwt import StaticTokenVerifier
 from starlette.responses import JSONResponse
 
 from . import ars_client, normalizza
-from .ars_client import ErroreArs
+from .exceptions import ErroreNakivo
 from .logger_config import setup_logging
 from .settings import settings
 
@@ -87,16 +86,17 @@ async def health(_richiesta):
     return JSONResponse({"stato": "ok"})
 
 
-async def _chiama(percorso: str, corpo: dict[str, Any]) -> Any:
-    """Chiama ARS e traduce il guasto in un errore del tool.
+@contextmanager
+def _traduci_errori():
+    """Le eccezioni del server diventano errori del tool, con la loro frase.
 
     `ToolError` e' l'unica eccezione il cui messaggio FastMCP lascia passare
     al client: e' li' che la frase pensata per l'utente diventa la risposta
     del tool.
     """
     try:
-        return await ars_client.chiama(percorso, corpo)
-    except ErroreArs as e:
+        yield
+    except ErroreNakivo as e:
         raise ToolError(str(e)) from e
 
 
@@ -137,45 +137,51 @@ async def nakivo_stato_backup(company_id: int) -> dict:
     I totali sono già contati (`totale_repository`, `totale_backup`, e uno
     per ogni repository): riporta quelli, non contare le righe a mano.
 
+    Le righe identiche (stesso nome, stesso repository, stesso ultimo punto)
+    arrivano unite in una sola, con `righe` che dice quante sono: sono
+    elementi distinti che Nakivo chiama allo stesso modo. Riporta quel numero.
+    `totale_backup` le conta tutte, una per una.
+
     I dati dicono solo quando è stato creato l'ultimo punto di ripristino:
     non dicono se il job è andato a buon fine, quindi non affermare che un
     backup è "riuscito" o "fallito".
     """
     logger.info(f"stato dei backup, azienda {company_id}")
-    data = await _chiama("/api/nakivo/backup-status", {"company_id": company_id})
+    with _traduci_errori():
+        data = await ars_client.chiama("/api/nakivo/backup-status", {"company_id": company_id})
     return normalizza.stato(data, soglia_ore=settings.SOGLIA_BACKUP_ORE)
 
 
 @mcp.tool(annotations=SOLA_LETTURA)
-async def nakivo_elenco_repository(company_id: int) -> dict:
-    """Elenco dei repository Nakivo dell'azienda: solo id e nome.
+async def nakivo_backup_del_repository(company_id: int, repository: str) -> dict:
+    """I backup contenuti in un repository, dato il suo nome.
 
-    Serve quando ti interessa un repository soltanto: prendi il suo `id` qui
-    e passalo a `nakivo_backup_del_repository`. Per una panoramica completa
-    usa invece `nakivo_stato_backup`.
-    """
-    logger.info(f"elenco dei repository, azienda {company_id}")
-    data = await _chiama("/api/nakivo/repositories/all", {"company_id": company_id})
-    return normalizza.repository(data)
+    Legge soltanto: non esegue nessun backup. `repository` è il nome come
+    compare in `nakivo_stato_backup` o come lo scrive l'utente, per esempio
+    "nasbackup.opero.local"; basta anche una parte, se un solo repository la
+    contiene. Se il nome non basta, l'errore dice quali repository ci sono.
 
-
-@mcp.tool(annotations=SOLA_LETTURA)
-async def nakivo_backup_del_repository(company_id: int, repository_id: int) -> dict:
-    """I backup contenuti in un repository, dato il suo id.
-
-    Legge soltanto: non esegue nessun backup. L'id del repository si prende
-    da `nakivo_elenco_repository` o da `nakivo_stato_backup`.
+    Le righe identiche arrivano unite in una sola, con `righe` che dice
+    quante sono; `totale_backup` le conta tutte, una per una.
 
     Usalo solo per una domanda su quel repository. Se la domanda riguarda un
     backup per nome, usa `nakivo_stato_backup`: lo stesso nome esiste spesso
     anche in altri repository, e qui non li vedresti.
     """
-    logger.info(f"backup del repository {repository_id}, azienda {company_id}")
-    data = await _chiama(
-        "/api/nakivo/repositories/backups",
-        {"company_id": company_id, "repository_id": repository_id},
-    )
-    return normalizza.backup(data, repository_id)
+    logger.info(f"backup del repository {repository!r}, azienda {company_id}")
+    # ARS vuole l'id Nakivo del repository. Con un id che non e' dell'azienda
+    # risponde "0 backup" invece di un errore: per questo l'id lo cerca il
+    # server fra i repository dell'azienda, e non lo sceglie il modello.
+    with _traduci_errori():
+        elenco = await ars_client.chiama(
+            "/api/nakivo/repositories/all", {"company_id": company_id}
+        )
+        trovato = normalizza.cerca_repository(elenco, repository)
+        data = await ars_client.chiama(
+            "/api/nakivo/repositories/backups",
+            {"company_id": company_id, "repository_id": trovato["id"]},
+        )
+    return normalizza.backup(data, trovato["nome"])
 
 
 if __name__ == "__main__":
