@@ -21,3 +21,7 @@ class ErroreArs(ErroreNakivo):
 
 class RepositoryNonTrovato(ErroreNakivo):
     """Il nome non indica un repository dell'azienda: il messaggio dice quali ci sono."""
+
+
+class BackupNonTrovato(ErroreNakivo):
+    """Nessun backup dell'azienda ha il nome cercato."""

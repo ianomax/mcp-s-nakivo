@@ -4,24 +4,54 @@
 Un modello sbaglia facilmente i conti con le date, il conteggio di un elenco
 lungo, la lettura di una struttura che cambia forma e la scelta di cosa
 segnalare. Per questo qui l'eta' dell'ultimo punto di ripristino e' gia'
-calcolata e scritta anche in lettere (`da_quanto`), i totali sono contati, le
-righe identiche sono unite con il loro numero, i backup da controllare e i
-repository vuoti sono gia' scelti, e `data` si accetta sia come lista sia come
-oggetto con chiavi "0", "1", ...
+calcolata e scritta anche in lettere (`da_quanto`), piattaforma e tipo di ogni
+backup sono in parole, i totali sono contati, anche per piattaforma, le righe
+identiche sono unite con il loro numero, i backup non aggiornati sono segnati
+riga per riga e contati, i repository vuoti sono gia' scelti, e `data` si
+accetta sia come lista sia come oggetto con chiavi "0", "1", ...
 
 Funzioni pure: prendono la risposta di ARS e l'istante, e restituiscono un
 dizionario.
 """
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime
 from typing import Any, Optional
 
-from .exceptions import RepositoryNonTrovato
+from .exceptions import BackupNonTrovato, RepositoryNonTrovato
 
 # Dentro `data` ARS infila anche l'output del comando, in HTML. Non e' un
 # repository e non deve arrivare al modello.
 CHIAVI_NON_REPOSITORY = {"command_message"}
+
+# `hvType` e `sourceType` arrivano da ARS come li scrive Nakivo. Qui diventano
+# parole, perche' il modello ricopierebbe i codici tali e quali, anche nei
+# rapportini. Un codice che manca da queste tabelle passa com'e'.
+PIATTAFORME = {
+    "VMWARE": "VMware",
+    "OFFICE365": "Microsoft 365",
+    "PHYSICAL": "macchine fisiche",
+    "NAS": "NAS",
+}
+
+# `VM_BACKUP` vale per le macchine virtuali, per quelle fisiche e per le
+# cartelle dei NAS: il tipo dipende anche dalla piattaforma.
+TIPI = {
+    ("VMWARE", "VM_BACKUP"): "macchina virtuale",
+    ("PHYSICAL", "VM_BACKUP"): "macchina fisica",
+    ("NAS", "VM_BACKUP"): "cartella condivisa",
+    ("OFFICE365", "OUTLOOK_USER"): "posta",
+    ("OFFICE365", "ONE_DRIVE"): "OneDrive",
+    ("OFFICE365", "O365_TEAMS"): "Teams",
+    ("OFFICE365", "O365_GROUP"): "gruppo Microsoft 365",
+    ("OFFICE365", "SHARE_POINT"): "sito SharePoint",
+    ("OFFICE365", "SHARE_POINT_GROUP"): "sito SharePoint del gruppo",
+    ("OFFICE365", "SHARE_POINT_PERSONAL"): "sito SharePoint personale",
+}
+
+# Nei totali per piattaforma, le righe che ARS manda senza `hvType`.
+PIATTAFORMA_NON_INDICATA = "non indicata"
 
 
 def adesso() -> datetime:
@@ -84,17 +114,56 @@ def _da_quanto(ore: Optional[float]) -> str:
     return testo
 
 
-def _uniche(righe: list[dict]) -> list[tuple[dict, int]]:
-    """Le righe con lo stesso nome, job e ultimo punto, unite: ognuna col suo numero.
+def _codice(valore: Any) -> Optional[str]:
+    """Un codice di Nakivo, o None se ARS non lo manda."""
+    return valore if isinstance(valore, str) and valore else None
 
-    Nakivo ripete la stessa riga per elementi diversi che ARS non distingue
-    fra loro. Riassumendo un elenco lungo il modello raggruppa da se' le righe
-    uguali e le conta male: qui arrivano gia' contate. L'ordine e' quello
-    della prima comparsa.
+
+def _piattaforma(riga: dict) -> Optional[str]:
+    """La piattaforma del backup in parole: VMware, Microsoft 365, ..."""
+    codice = _codice(riga.get("hvType"))
+    return PIATTAFORME.get(codice, codice) if codice else None
+
+
+def _tipo(riga: dict) -> Optional[str]:
+    """Cosa e' stato salvato, in parole: macchina virtuale, posta, OneDrive, ..."""
+    codice = _codice(riga.get("sourceType"))
+    if codice is None:
+        return None
+    return TIPI.get((_codice(riga.get("hvType")), codice), codice)
+
+
+def _per_piattaforma(righe: list[dict]) -> dict[str, int]:
+    """Quante righe di ARS per piattaforma, dalla piu' numerosa.
+
+    Vuoto se ARS non manda la piattaforma di nessuna riga. Se la manda solo per
+    alcune, le altre stanno sotto "non indicata", cosi' la somma torna col
+    totale dei backup.
+    """
+    conteggi = Counter(_piattaforma(riga) or PIATTAFORMA_NON_INDICATA for riga in righe)
+    if not conteggi or set(conteggi) == {PIATTAFORMA_NON_INDICATA}:
+        return {}
+    return dict(conteggi.most_common())
+
+
+def _uniche(righe: list[dict]) -> list[tuple[dict, int]]:
+    """Le righe uguali in tutto, tipo compreso, unite: ognuna col suo numero.
+
+    Uguali vuol dire stesso nome, job, ultimo punto, piattaforma e tipo. Lo
+    stesso nome con un tipo diverso e' un altro elemento, per esempio la posta
+    e il OneDrive della stessa persona, e resta una riga a se'. Riassumendo un
+    elenco lungo il modello raggruppa da se' le righe uguali e le conta male:
+    qui arrivano gia' contate. L'ordine e' quello della prima comparsa.
     """
     conteggi: dict[tuple, list] = {}
     for riga in righe:
-        chiave = (riga.get("name"), riga.get("jobName"), riga.get("lastSavePointCreatedDate"))
+        chiave = (
+            riga.get("name"),
+            riga.get("jobName"),
+            riga.get("lastSavePointCreatedDate"),
+            _codice(riga.get("hvType")),
+            _codice(riga.get("sourceType")),
+        )
         if chiave in conteggi:
             conteggi[chiave][1] += 1
         else:
@@ -119,6 +188,12 @@ def _backup(riga: dict, ora: datetime, repository: Optional[str] = None) -> dict
     voce = {"nome": riga.get("name")}
     if repository is not None:
         voce["repository"] = repository
+    # Piattaforma e tipo ci sono solo se ARS li manda.
+    piattaforma, tipo = _piattaforma(riga), _tipo(riga)
+    if piattaforma is not None:
+        voce["piattaforma"] = piattaforma
+    if tipo is not None:
+        voce["tipo"] = tipo
     voce.update(
         {
             "job": riga.get("jobName"),
@@ -133,17 +208,28 @@ def _backup(riga: dict, ora: datetime, repository: Optional[str] = None) -> dict
     return voce
 
 
-def _backup_uniti(righe: list[dict], ora: datetime, repository: Optional[str] = None) -> list[dict]:
+def _vecchio(ore_fa: Optional[float], soglia_ore: float) -> bool:
+    """Se l'ultimo punto e' piu' vecchio della soglia, o non c'e'."""
+    return ore_fa is None or ore_fa > soglia_ore
+
+
+def _backup_uniti(
+    righe: list[dict], ora: datetime, soglia_ore: float, repository: Optional[str] = None
+) -> list[dict]:
     """Le righe di backup di un repository, con quelle identiche unite.
 
-    `righe` c'e' solo quando vale piu' di 1, cosi' le righe singole restano
-    come sono.
+    `righe` c'e' solo quando vale piu' di 1, e `non_aggiornato` solo quando
+    e' vero, cosi' le righe senza niente da dire restano come sono. Il
+    confronto con la soglia lo fa il server: nell'elenco completo il modello
+    riconosce i backup da segnalare senza confrontare le date da se'.
     """
     elenco = []
     for riga, quante in _uniche(righe):
         voce = _backup(riga, ora, repository)
         if quante > 1:
             voce["righe"] = quante
+        if _vecchio(voce["ore_fa"], soglia_ore):
+            voce["non_aggiornato"] = True
         elenco.append(voce)
     return elenco
 
@@ -166,54 +252,57 @@ def _omonimi(repository: list[dict]) -> dict[str, int]:
     return {nome: len(posti) for nome, posti in dove.items() if len(posti) > 1}
 
 
-def _da_controllare(repository: list[dict], soglia_ore: float) -> list[dict]:
-    """I backup da segnalare: l'ultimo punto e' piu' vecchio della soglia, o non c'e'.
-
-    Arrivano gia' scelti perche' il modello, riassumendo un elenco lungo, li
-    perde. Prima quelli senza punto di ripristino, poi dal piu' vecchio.
-    """
-    vecchi = [
-        voce
-        for riga in repository
-        for voce in riga["backup"]
-        if voce["ore_fa"] is None or voce["ore_fa"] > soglia_ore
-    ]
-    vecchi.sort(key=lambda voce: (voce["ore_fa"] is not None, -(voce["ore_fa"] or 0.0)))
-    chiavi = ("nome", "repository", "ultimo_punto", "da_quanto", "righe")
-    return [
-        {chiave: voce[chiave] for chiave in chiavi if chiave in voce}
-        for voce in vecchi
-    ]
+def _soglia(soglia_ore: float) -> float:
+    """24 e non 24.0: il modello scrive la soglia come la legge."""
+    return int(soglia_ore) if float(soglia_ore).is_integer() else soglia_ore
 
 
 def stato(data: Any, ora: Optional[datetime] = None, soglia_ore: float = 24.0) -> dict:
     """La risposta di `backup-status`: i repository con dentro i loro backup.
 
-    In testa, prima dell'elenco, quello che va segnalato: i backup da
-    controllare secondo `soglia_ore` e i repository vuoti.
+    In testa, prima dell'elenco, i totali e quello che va segnalato: quanti
+    backup non sono aggiornati secondo `soglia_ore` e i repository vuoti.
+    Quali siano lo dice `non_aggiornato` nelle loro righe, dentro l'elenco
+    completo: un elenco a parte il modello lo riporterebbe al posto di quello
+    completo, o in aggiunta.
     """
     ora = ora or adesso()
+    letti = [(riga, _righe(riga.get("backups"))) for riga in _righe(data)]
     repository = [
         {
             "nome": riga.get("name"),
             # Il totale conta le righe di ARS, anche quelle poi unite.
-            "totale_backup": len(_righe(riga.get("backups"))),
-            "backup": _backup_uniti(_righe(riga.get("backups")), ora, riga.get("name")),
+            "totale_backup": len(backup),
+            "backup": _backup_uniti(backup, ora, soglia_ore, riga.get("name")),
         }
-        for riga in _righe(data)
+        for riga, backup in letti
     ]
     vuoti = [r["nome"] for r in repository if r["totale_backup"] == 0]
-    return {
+    risposta = {
         "ora_attuale": ora.isoformat(timespec="seconds"),
         "totale_repository": len(repository),
         "totale_backup": sum(r["totale_backup"] for r in repository),
-        "repository_con_backup": len(repository) - len(vuoti),
-        "repository_vuoti": vuoti,
-        "soglia_ore": soglia_ore,
-        "da_controllare": _da_controllare(repository, soglia_ore),
-        "nomi_in_piu_repository": _omonimi(repository),
-        "repository": repository,
     }
+    per_piattaforma = _per_piattaforma([b for _, backup in letti for b in backup])
+    if per_piattaforma:
+        risposta["backup_per_piattaforma"] = per_piattaforma
+    risposta.update(
+        {
+            "repository_con_backup": len(repository) - len(vuoti),
+            "repository_vuoti": vuoti,
+            "soglia_ore": _soglia(soglia_ore),
+            # Come `totale_backup`, conta le righe di ARS, anche quelle unite.
+            "totale_non_aggiornati": sum(
+                voce.get("righe", 1)
+                for riga in repository
+                for voce in riga["backup"]
+                if voce.get("non_aggiornato")
+            ),
+            "nomi_in_piu_repository": _omonimi(repository),
+            "repository": repository,
+        }
+    )
+    return risposta
 
 
 def cerca_repository(data: Any, nome: str) -> dict:
@@ -250,13 +339,72 @@ def cerca_repository(data: Any, nome: str) -> dict:
     )
 
 
-def backup(data: Any, repository: str, ora: Optional[datetime] = None) -> dict:
+def backup(
+    data: Any, repository: str, ora: Optional[datetime] = None, soglia_ore: float = 24.0
+) -> dict:
     """La risposta di `repositories/backups`: i backup di un repository."""
     ora = ora or adesso()
     righe = _righe(data)
-    return {
+    risposta = {
         "ora_attuale": ora.isoformat(timespec="seconds"),
         "repository": repository,
         "totale_backup": len(righe),
-        "backup": _backup_uniti(righe, ora, repository),
+    }
+    per_piattaforma = _per_piattaforma(righe)
+    if per_piattaforma:
+        risposta["backup_per_piattaforma"] = per_piattaforma
+    risposta["soglia_ore"] = _soglia(soglia_ore)
+    risposta["backup"] = _backup_uniti(righe, ora, soglia_ore, repository)
+    return risposta
+
+
+def per_nome(
+    data: Any, nome: str, ora: Optional[datetime] = None, soglia_ore: float = 24.0
+) -> dict:
+    """Da `backup-status`, i soli backup col nome cercato, divisi per repository.
+
+    Un modello che cerca le righe di un nome in tutto l'elenco ne perde
+    qualcuna: qui le sceglie il server. Il confronto ignora maiuscole e spazi
+    ai bordi. Se qualche nome e' identico a quello cercato valgono solo quelli,
+    altrimenti tutti quelli che lo contengono: "Pontarollo" trova "Massimiliano
+    Pontarollo", "srv-web" non trova anche "srv-web2" se esiste "srv-web".
+    `nomi_trovati` dice quali nomi sono.
+    """
+    ora = ora or adesso()
+    cercato = nome.strip().casefold()
+    letti = [(riga, _righe(riga.get("backups"))) for riga in _righe(data)]
+    nomi = {
+        b["name"]
+        for _, backup in letti
+        for b in backup
+        if isinstance(b.get("name"), str) and cercato and cercato in b["name"].casefold()
+    }
+    identici = {n for n in nomi if n.strip().casefold() == cercato}
+    scelti = identici or nomi
+    if not scelti:
+        raise BackupNonTrovato(f"Nessun backup dell'azienda ha \"{nome.strip()}\" nel nome.")
+    repository = []
+    for riga, backup in letti:
+        suoi = [b for b in backup if b.get("name") in scelti]
+        if suoi:
+            repository.append(
+                {
+                    "nome": riga.get("name"),
+                    "totale_backup": len(suoi),
+                    "backup": _backup_uniti(suoi, ora, soglia_ore, riga.get("name")),
+                }
+            )
+    return {
+        "ora_attuale": ora.isoformat(timespec="seconds"),
+        "cercato": nome.strip(),
+        "nomi_trovati": sorted(scelti),
+        "totale_backup": sum(r["totale_backup"] for r in repository),
+        "soglia_ore": _soglia(soglia_ore),
+        "totale_non_aggiornati": sum(
+            voce.get("righe", 1)
+            for riga in repository
+            for voce in riga["backup"]
+            if voce.get("non_aggiornato")
+        ),
+        "repository": repository,
     }

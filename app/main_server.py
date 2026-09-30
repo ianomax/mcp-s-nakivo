@@ -1,5 +1,5 @@
 # app/main_server.py
-"""Il server MCP: due tool che leggono i backup Nakivo di un'azienda.
+"""Il server MCP: tre tool che leggono i backup Nakivo di un'azienda.
 
 `company_id` e' un parametro di ogni tool, ma **non lo sceglie il modello**:
 lo mette mcp-c-ars a ogni chiamata, prendendolo dalla richiesta che arriva da
@@ -51,7 +51,7 @@ async def ciclo_di_vita(_server: FastMCP):
     logger.info(
         f"Server MCP Nakivo avviato. ARS: {settings.ARS_BASE_URL}. "
         f"Ora locale: {normalizza.adesso().isoformat(timespec='minutes')}. "
-        f"Backup da controllare oltre {settings.SOGLIA_BACKUP_ORE:g} ore"
+        f"Backup non aggiornati oltre {settings.SOGLIA_BACKUP_ORE:g} ore"
     )
     yield
     await ars_client.chiudi()
@@ -104,22 +104,35 @@ def _traduci_errori():
 async def nakivo_stato_backup(company_id: int) -> dict:
     """Stato dei backup Nakivo dell'azienda: tutti i repository con i loro backup.
 
-    È il tool giusto per la maggior parte delle domande sui backup, comprese
-    quelle su un singolo backup o su un singolo repository.
+    È il tool per lo stato dei backup in generale. Per un backup preciso,
+    dato il suo nome, usa `nakivo_backup_per_nome`; per un repository,
+    `nakivo_backup_del_repository`.
 
-    **In testa alla risposta c'è già pronto quello che va segnalato.**
-    `da_controllare` sono i backup il cui ultimo punto di ripristino è più
-    vecchio di `soglia_ore` ore, o che non ne hanno nessuno;
-    `repository_vuoti` sono i repository senza backup, e
-    `repository_con_backup` quanti repository ne hanno. Riportali sempre, in
-    ogni risposta sullo stato dei backup, anche breve, così come sono: non
-    sceglierli di nuovo dall'elenco. Se `da_controllare` è vuoto, dillo.
+    **In testa alla risposta ci sono i totali e quello che va segnalato:**
+    `totale_repository`, `totale_backup`, `backup_per_piattaforma`,
+    `repository_con_backup`, `repository_vuoti` (i repository senza backup) e
+    `totale_non_aggiornati`, quanti backup non sono aggiornati da più di
+    `soglia_ore` ore: il loro ultimo punto di ripristino è più vecchio, o non
+    ce n'è nessuno. Riportali sempre, in ogni risposta sullo stato dei backup,
+    così come sono.
+
+    **Alla domanda sullo stato dei backup elenca tutti i backup**, repository
+    per repository come stanno in `repository`, non solo quelli non
+    aggiornati. Come si elencano, in questa e in ogni altra risposta: in
+    Markdown, divisi per repository, con il nome del repository in grassetto e
+    sotto un elenco puntato con un backup per riga, nella forma «nome, tipo:
+    ultimo punto, da quanto fa». Un backup sta su una riga sola, senza
+    sottopunti. Le righe con `non_aggiornato` finiscono con «non aggiornato»
+    in grassetto: non ripeterle in un elenco a parte.
+
+    Se chiedono solo i backup non aggiornati, elenca solo le righe con
+    `non_aggiornato`, nello stesso modo. Se `totale_non_aggiornati` è 0,
+    dillo.
 
     **Un backup con lo stesso nome sta spesso in più repository, con date
     molto diverse.** `nomi_in_piu_repository` dice quali nomi sono in questo
-    caso e in quanti repository stanno: se ti chiedono di uno di quei nomi,
-    cerca tutte le righe con quel nome e riportale **tutte**, ognuna col suo
-    repository. Non fermarti alla prima che trovi.
+    caso e in quanti repository stanno. Se ti chiedono di un backup per nome,
+    usa `nakivo_backup_per_nome`, che le righe di quel nome le sceglie già.
 
     Ogni riga è già "l'ultimo backup" di quel nome in quel repository. Per un
     nome che sta in tre repository ci sono quindi tre ultimi backup, con tre
@@ -130,14 +143,23 @@ async def nakivo_stato_backup(company_id: int) -> dict:
     (`ultimo_punto`) e quanto tempo è passato (`ore_fa` e `da_quanto`, già
     calcolati: non rifare i conti con le date).
 
-    Ogni riga porta il suo `repository`: cita sempre quale è, non prendere la
-    data di un repository per un altro e non concludere che un backup è
-    vecchio se in un altro repository ne esiste uno recente.
+    Ogni riga porta il suo `repository`: cita sempre quale è e non prendere
+    la data di un repository per un altro. Se un backup è non aggiornato lo
+    dice `non_aggiornato` nella sua riga, anche quando lo stesso nome è
+    recente in un altro repository: sono copie diverse.
 
-    I totali sono già contati (`totale_repository`, `totale_backup`, e uno
-    per ogni repository): riporta quelli, non contare le righe a mano.
+    Ogni riga dice la piattaforma (`piattaforma`: VMware, Microsoft 365,
+    macchine fisiche, NAS) e cosa è stato salvato (`tipo`: macchina virtuale,
+    posta, OneDrive, sito SharePoint, ...). Lo stesso nome può stare più
+    volte nello stesso repository con tipi diversi, per esempio la posta, il
+    OneDrive e il sito SharePoint personale della stessa persona: sono
+    elementi diversi, riportali ognuno col suo tipo.
 
-    Le righe identiche (stesso nome, stesso repository, stesso ultimo punto)
+    I totali sono già contati (`totale_repository`, `totale_backup`, uno per
+    ogni repository, e `backup_per_piattaforma`, quanti backup per
+    piattaforma): riporta quelli, non contare le righe a mano.
+
+    Le righe identiche (stesso nome, tipo, repository e ultimo punto)
     arrivano unite in una sola, con `righe` che dice quante sono: sono
     elementi distinti che Nakivo chiama allo stesso modo. Riporta quel numero.
     `totale_backup` le conta tutte, una per una.
@@ -153,6 +175,35 @@ async def nakivo_stato_backup(company_id: int) -> dict:
 
 
 @mcp.tool(annotations=SOLA_LETTURA)
+async def nakivo_backup_per_nome(company_id: int, nome: str) -> dict:
+    """I backup con un certo nome, in tutti i repository dell'azienda.
+
+    È il tool per le domande su un backup preciso: "quando è stato fatto
+    l'ultimo backup di X?", "com'è il backup di X?". `nome` è il nome come lo
+    scrive l'utente, per esempio "Pontarollo" o "nb-ready15"; basta una
+    parte. Se un nome è identico vale solo quello, altrimenti tutti quelli che
+    contengono il testo: `nomi_trovati` dice quali sono, e se sono più di uno
+    dillo.
+
+    Le righe arrivano già scelte e divise per repository: riportale **tutte**,
+    anche quelle vecchie, ognuna nel suo repository. Ogni riga è l'ultimo
+    backup di quel nome in quel repository, e lo stesso nome può stare più
+    volte nello stesso repository con tipi diversi, per esempio la posta, il
+    OneDrive e il sito SharePoint personale della stessa persona.
+
+    Elencali in Markdown, sotto il nome del repository in grassetto, in un
+    elenco puntato con un backup per riga, nella forma «nome, tipo: ultimo
+    punto, da quanto fa». Un backup sta su una riga sola, senza sottopunti. Le
+    righe con `non_aggiornato` (ultimo punto più vecchio di `soglia_ore` ore,
+    o nessuno) finiscono con «non aggiornato» in grassetto.
+    """
+    logger.info(f"backup per nome {nome!r}, azienda {company_id}")
+    with _traduci_errori():
+        data = await ars_client.chiama("/api/nakivo/backup-status", {"company_id": company_id})
+        return normalizza.per_nome(data, nome, soglia_ore=settings.SOGLIA_BACKUP_ORE)
+
+
+@mcp.tool(annotations=SOLA_LETTURA)
 async def nakivo_backup_del_repository(company_id: int, repository: str) -> dict:
     """I backup contenuti in un repository, dato il suo nome.
 
@@ -161,12 +212,20 @@ async def nakivo_backup_del_repository(company_id: int, repository: str) -> dict
     "nasbackup.opero.local"; basta anche una parte, se un solo repository la
     contiene. Se il nome non basta, l'errore dice quali repository ci sono.
 
-    Le righe identiche arrivano unite in una sola, con `righe` che dice
-    quante sono; `totale_backup` le conta tutte, una per una.
+    Ogni riga dice `piattaforma` e `tipo`, come in `nakivo_stato_backup`, e
+    `backup_per_piattaforma` conta i backup per piattaforma. Le righe
+    identiche, tipo compreso, arrivano unite in una sola, con `righe` che
+    dice quante sono; `totale_backup` le conta tutte, una per una.
+
+    Elenca i backup in Markdown, sotto il nome del repository in grassetto,
+    in un elenco puntato con un backup per riga, nella forma «nome, tipo:
+    ultimo punto, da quanto fa». Un backup sta su una riga sola, senza
+    sottopunti. Le righe con `non_aggiornato` (ultimo punto più vecchio di
+    `soglia_ore` ore, o nessuno) finiscono con «non aggiornato» in grassetto.
 
     Usalo solo per una domanda su quel repository. Se la domanda riguarda un
-    backup per nome, usa `nakivo_stato_backup`: lo stesso nome esiste spesso
-    anche in altri repository, e qui non li vedresti.
+    backup per nome, usa `nakivo_backup_per_nome`: lo stesso nome esiste
+    spesso anche in altri repository, e qui non li vedresti.
     """
     logger.info(f"backup del repository {repository!r}, azienda {company_id}")
     # ARS vuole l'id Nakivo del repository. Con un id che non e' dell'azienda
@@ -181,7 +240,7 @@ async def nakivo_backup_del_repository(company_id: int, repository: str) -> dict
             "/api/nakivo/repositories/backups",
             {"company_id": company_id, "repository_id": trovato["id"]},
         )
-    return normalizza.backup(data, trovato["nome"])
+    return normalizza.backup(data, trovato["nome"], soglia_ore=settings.SOGLIA_BACKUP_ORE)
 
 
 if __name__ == "__main__":
