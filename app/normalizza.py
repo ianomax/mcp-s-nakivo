@@ -209,8 +209,13 @@ def _backup(riga: dict, ora: datetime, repository: Optional[str] = None) -> dict
 
 
 def _vecchio(ore_fa: Optional[float], soglia_ore: float) -> bool:
-    """Se l'ultimo punto e' piu' vecchio della soglia, o non c'e'."""
-    return ore_fa is None or ore_fa > soglia_ore
+    """Se l'ultimo punto ha almeno l'eta' della soglia, o non c'e'.
+
+    `ore_fa` e' arrotondato al decimo: 23,96 ore diventano 24,0, che
+    `_da_quanto` scrive "1 giorno". Con `>` quella riga direbbe un giorno
+    senza essere segnata.
+    """
+    return ore_fa is None or ore_fa >= soglia_ore
 
 
 def _backup_uniti(
