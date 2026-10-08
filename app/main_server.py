@@ -110,29 +110,56 @@ async def nakivo_stato_backup(company_id: int) -> dict:
 
     **In testa alla risposta ci sono i totali e quello che va segnalato:**
     `totale_repository`, `totale_backup`, `backup_per_piattaforma`,
-    `repository_con_backup`, `repository_vuoti` (i repository senza backup) e
-    `totale_non_aggiornati`, quanti backup non sono aggiornati da più di
-    `soglia_ore` ore: il loro ultimo punto di ripristino è più vecchio, o non
-    ce n'è nessuno. Riportali sempre, in ogni risposta sullo stato dei backup,
-    così come sono.
+    `repository_con_backup`, `repository_vuoti` (i repository senza backup),
+    `repository_non_accessibili` (con `membro_di` se fanno parte di un
+    repository federato), `totale_non_aggiornati`, quanti backup non sono
+    aggiornati (il loro ultimo punto di ripristino è troppo vecchio, o non ce
+    n'è nessuno), e `totale_non_accessibili`, quanti backup Nakivo segna come
+    non accessibili. Riportali sempre, in ogni risposta sullo stato dei
+    backup, con i loro valori; un repository non accessibile va sempre
+    segnalato, col federato di cui fa parte. Gli altri campi in testa, come
+    `ora_attuale`, non si riportano. Scrivili in un elenco puntato con
+    queste etichette, mai coi nomi dei campi né con parentesi graffe o
+    quadre, per esempio:
+
+    - Repository: 7, di cui 4 con backup
+    - Backup: 43 (VMware 28, Microsoft 365 14, macchine fisiche 1)
+    - Repository vuoti: nas-a, nas-b
+    - Repository non accessibili: nessuno
+    - Backup non aggiornati: 0
+    - Backup non accessibili: 0
+
+    Un repository non accessibile membro di un federato si scrive «nome
+    (membro di federato)».
 
     **Alla domanda sullo stato dei backup elenca tutti i backup**, repository
     per repository come stanno in `repository`, non solo quelli non
     aggiornati. Come si elencano, in questa e in ogni altra risposta: in
-    Markdown, divisi per repository, con il nome del repository in grassetto e
-    sotto un elenco puntato con un backup per riga, nella forma «nome, tipo:
+    Markdown, divisi per repository, con il nome del repository come titolo
+    di quinto livello («##### nome») e sotto un elenco puntato con un backup
+    per riga, nella forma «nome, tipo:
     ultimo punto, da quanto fa». Un backup sta su una riga sola, senza
     sottopunti. Le righe con `non_aggiornato` finiscono con «non aggiornato»
-    in grassetto: non ripeterle in un elenco a parte.
+    in grassetto, quelle con `non_accessibile` con «non accessibile» in
+    grassetto, e quelle con tutti e due con tutti e due: non ripeterle in un
+    elenco a parte. Sotto un repository vuoto c'è una riga sola: «nessun
+    backup».
+
+    Un repository federato ha `tipo` «federato», e un repository che non è a
+    posto il suo `stato` (non accessibile, sconosciuto): riportali accanto al
+    nome. Un repository federato è fatto di più repository, i suoi `membri`,
+    ognuno col suo stato se non è a posto: i backup stanno nel federato, e i
+    membri non ne hanno di propri.
+    Nomina i membri sotto il federato, prima dei suoi backup, e non contarli
+    come repository vuoti.
 
     Se chiedono solo i backup non aggiornati, elenca solo le righe con
-    `non_aggiornato`, nello stesso modo. Se `totale_non_aggiornati` è 0,
-    dillo.
+    `non_aggiornato`, nello stesso modo; se chiedono quelli non accessibili,
+    solo le righe con `non_accessibile`. Se il loro totale è 0, dillo.
 
     **Un backup con lo stesso nome sta spesso in più repository, con date
-    molto diverse.** `nomi_in_piu_repository` dice quali nomi sono in questo
-    caso e in quanti repository stanno. Se ti chiedono di un backup per nome,
-    usa `nakivo_backup_per_nome`, che le righe di quel nome le sceglie già.
+    molto diverse.** Se ti chiedono di un backup per nome, usa
+    `nakivo_backup_per_nome`, che le righe di quel nome le sceglie già.
 
     Ogni riga è già "l'ultimo backup" di quel nome in quel repository. Per un
     nome che sta in tre repository ci sono quindi tre ultimi backup, con tre
@@ -146,7 +173,8 @@ async def nakivo_stato_backup(company_id: int) -> dict:
     Ogni riga porta il suo `repository`: cita sempre quale è e non prendere
     la data di un repository per un altro. Se un backup è non aggiornato lo
     dice `non_aggiornato` nella sua riga, anche quando lo stesso nome è
-    recente in un altro repository: sono copie diverse.
+    recente in un altro repository: sono copie diverse. Lo stesso per
+    `non_accessibile`.
 
     Ogni riga dice la piattaforma (`piattaforma`: VMware, Microsoft 365,
     macchine fisiche, NAS) e cosa è stato salvato (`tipo`: macchina virtuale,
@@ -171,7 +199,21 @@ async def nakivo_stato_backup(company_id: int) -> dict:
     logger.info(f"stato dei backup, azienda {company_id}")
     with _traduci_errori():
         data = await ars_client.chiama("/api/nakivo/backup-status", {"company_id": company_id})
-    return normalizza.stato(data, soglia_ore=settings.SOGLIA_BACKUP_ORE)
+    # Di quale federato e' membro un repository lo dice solo
+    # `repositories/all`. Se non risponde, lo stato esce lo stesso, coi
+    # repository tutti in fila.
+    try:
+        repositories = await ars_client.chiama(
+            "/api/nakivo/repositories/all", {"company_id": company_id}
+        )
+    except ErroreNakivo as e:
+        logger.warning(f"repository dell'azienda {company_id} non letti, stato senza federati: {e}")
+        repositories = None
+    return normalizza.stato(
+        data,
+        soglia_ore=settings.SOGLIA_BACKUP_ORE,
+        repositories=repositories,
+    )
 
 
 @mcp.tool(annotations=SOLA_LETTURA)
@@ -191,16 +233,22 @@ async def nakivo_backup_per_nome(company_id: int, nome: str) -> dict:
     volte nello stesso repository con tipi diversi, per esempio la posta, il
     OneDrive e il sito SharePoint personale della stessa persona.
 
-    Elencali in Markdown, sotto il nome del repository in grassetto, in un
-    elenco puntato con un backup per riga, nella forma «nome, tipo: ultimo
-    punto, da quanto fa». Un backup sta su una riga sola, senza sottopunti. Le
-    righe con `non_aggiornato` (ultimo punto più vecchio di `soglia_ore` ore,
-    o nessuno) finiscono con «non aggiornato» in grassetto.
+    Elencali in Markdown, sotto il nome del repository come titolo di quinto
+    livello («##### nome»), in un elenco puntato con un backup per riga, nella
+    forma «nome, tipo: ultimo punto, da quanto fa». Un backup sta su una riga
+    sola, senza sottopunti. Le righe con `non_aggiornato` (ultimo punto troppo
+    vecchio, o nessuno) finiscono con «non aggiornato» in grassetto, quelle con
+    `non_accessibile` (Nakivo non riesce ad accedere al backup) con «non
+    accessibile» in grassetto.
     """
     logger.info(f"backup per nome {nome!r}, azienda {company_id}")
     with _traduci_errori():
         data = await ars_client.chiama("/api/nakivo/backup-status", {"company_id": company_id})
-        return normalizza.per_nome(data, nome, soglia_ore=settings.SOGLIA_BACKUP_ORE)
+        return normalizza.per_nome(
+            data,
+            nome,
+            soglia_ore=settings.SOGLIA_BACKUP_ORE,
+        )
 
 
 @mcp.tool(annotations=SOLA_LETTURA)
@@ -217,11 +265,18 @@ async def nakivo_backup_del_repository(company_id: int, repository: str) -> dict
     identiche, tipo compreso, arrivano unite in una sola, con `righe` che
     dice quante sono; `totale_backup` le conta tutte, una per una.
 
-    Elenca i backup in Markdown, sotto il nome del repository in grassetto,
-    in un elenco puntato con un backup per riga, nella forma «nome, tipo:
-    ultimo punto, da quanto fa». Un backup sta su una riga sola, senza
-    sottopunti. Le righe con `non_aggiornato` (ultimo punto più vecchio di
-    `soglia_ore` ore, o nessuno) finiscono con «non aggiornato» in grassetto.
+    Elenca i backup in Markdown, sotto il nome del repository come titolo di
+    quinto livello («##### nome»), in un elenco puntato con un backup per
+    riga, nella forma «nome, tipo: ultimo punto, da quanto fa». Un backup sta
+    su una riga sola, senza sottopunti. Le righe con `non_aggiornato` (ultimo
+    punto troppo vecchio, o nessuno) finiscono con «non aggiornato» in grassetto,
+    quelle con `non_accessibile` con «non accessibile» in grassetto.
+
+    La risposta dice anche `tipo` del repository, se è un federato, e il suo
+    `stato`, se non è a posto. Se ha `membro_di`, il repository fa parte di un repository
+    federato: i backup stanno nel federato, quindi è normale che qui non ce
+    ne siano, e per vederli serve il federato. Se ha `membri`, è il federato,
+    e quelli sono i repository di cui è fatto.
 
     Usalo solo per una domanda su quel repository. Se la domanda riguarda un
     backup per nome, usa `nakivo_backup_per_nome`: lo stesso nome esiste
@@ -240,7 +295,12 @@ async def nakivo_backup_del_repository(company_id: int, repository: str) -> dict
             "/api/nakivo/repositories/backups",
             {"company_id": company_id, "repository_id": trovato["id"]},
         )
-    return normalizza.backup(data, trovato["nome"], soglia_ore=settings.SOGLIA_BACKUP_ORE)
+    return normalizza.backup(
+        data,
+        trovato["nome"],
+        soglia_ore=settings.SOGLIA_BACKUP_ORE,
+        repositories=elenco,
+    )
 
 
 if __name__ == "__main__":

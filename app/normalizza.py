@@ -6,9 +6,10 @@ lungo, la lettura di una struttura che cambia forma e la scelta di cosa
 segnalare. Per questo qui l'eta' dell'ultimo punto di ripristino e' gia'
 calcolata e scritta anche in lettere (`da_quanto`), piattaforma e tipo di ogni
 backup sono in parole, i totali sono contati, anche per piattaforma, le righe
-identiche sono unite con il loro numero, i backup non aggiornati sono segnati
-riga per riga e contati, i repository vuoti sono gia' scelti, e `data` si
-accetta sia come lista sia come oggetto con chiavi "0", "1", ...
+identiche sono unite con il loro numero, i backup non aggiornati e quelli non
+accessibili sono segnati riga per riga e contati, i repository vuoti e
+quelli non accessibili sono gia' scelti, i membri di un repository federato stanno dentro il federato, e
+`data` si accetta sia come lista sia come oggetto con chiavi "0", "1", ...
 
 Funzioni pure: prendono la risposta di ARS e l'istante, e restituiscono un
 dizionario.
@@ -52,6 +53,18 @@ TIPI = {
 
 # Nei totali per piattaforma, le righe che ARS manda senza `hvType`.
 PIATTAFORMA_NON_INDICATA = "non indicata"
+
+# Il tipo di repository che si riporta, come lo manda ARS (minuscolo): solo il
+# federato, fatto di piu' repository, i suoi membri. I backup stanno nel
+# federato, e i membri non ne hanno di propri. Gli altri tipi (locale,
+# condivisione di rete, S3) non dicono niente sullo stato dei backup.
+FEDERATO = "federated"
+
+# Lo stato del repository; "ok" non si riporta, perche' non c'e' niente da dire.
+STATI_REPOSITORY = {
+    "inaccessible": "non accessibile",
+    "none": "sconosciuto",
+}
 
 
 def adesso() -> datetime:
@@ -149,9 +162,10 @@ def _per_piattaforma(righe: list[dict]) -> dict[str, int]:
 def _uniche(righe: list[dict]) -> list[tuple[dict, int]]:
     """Le righe uguali in tutto, tipo compreso, unite: ognuna col suo numero.
 
-    Uguali vuol dire stesso nome, job, ultimo punto, piattaforma e tipo. Lo
-    stesso nome con un tipo diverso e' un altro elemento, per esempio la posta
-    e il OneDrive della stessa persona, e resta una riga a se'. Riassumendo un
+    Uguali vuol dire stesso nome, job, ultimo punto, piattaforma, tipo e
+    accessibilita'. Lo stesso nome con un tipo diverso e' un altro elemento,
+    per esempio la posta e il OneDrive della stessa persona, e resta una riga
+    a se'. Riassumendo un
     elenco lungo il modello raggruppa da se' le righe uguali e le conta male:
     qui arrivano gia' contate. L'ordine e' quello della prima comparsa.
     """
@@ -163,6 +177,7 @@ def _uniche(righe: list[dict]) -> list[tuple[dict, int]]:
             riga.get("lastSavePointCreatedDate"),
             _codice(riga.get("hvType")),
             _codice(riga.get("sourceType")),
+            riga.get("isAccessible"),
         )
         if chiave in conteggi:
             conteggi[chiave][1] += 1
@@ -219,14 +234,19 @@ def _vecchio(ore_fa: Optional[float], soglia_ore: float) -> bool:
 
 
 def _backup_uniti(
-    righe: list[dict], ora: datetime, soglia_ore: float, repository: Optional[str] = None
+    righe: list[dict],
+    ora: datetime,
+    soglia_ore: float,
+    repository: Optional[str] = None,
 ) -> list[dict]:
     """Le righe di backup di un repository, con quelle identiche unite.
 
-    `righe` c'e' solo quando vale piu' di 1, e `non_aggiornato` solo quando
-    e' vero, cosi' le righe senza niente da dire restano come sono. Il
-    confronto con la soglia lo fa il server: nell'elenco completo il modello
-    riconosce i backup da segnalare senza confrontare le date da se'.
+    `righe` c'e' solo quando vale piu' di 1, e `non_aggiornato` e
+    `non_accessibile` solo quando sono veri, cosi' le righe senza niente da
+    dire restano come sono. Il confronto con le soglie lo fa il server:
+    nell'elenco completo il modello riconosce i backup da segnalare senza
+    confrontare le date da se'. Non accessibile e' solo il backup per cui ARS
+    manda `isAccessible` falso: senza il campo non si segna niente.
     """
     elenco = []
     for riga, quante in _uniche(righe):
@@ -235,53 +255,129 @@ def _backup_uniti(
             voce["righe"] = quante
         if _vecchio(voce["ore_fa"], soglia_ore):
             voce["non_aggiornato"] = True
+        if riga.get("isAccessible") is False:
+            voce["non_accessibile"] = True
         elenco.append(voce)
     return elenco
 
 
-def _omonimi(repository: list[dict]) -> dict[str, int]:
-    """Quali nomi stanno in piu' di un repository, e in quanti.
+def _contate(repository: list[dict], segno: str) -> int:
+    """Quante righe di ARS hanno `segno`, contando anche quelle unite."""
+    return sum(
+        voce.get("righe", 1)
+        for riga in repository
+        for voce in riga["backup"]
+        if voce.get(segno)
+    )
 
-    Chiesto di un backup per nome, il modello tende a fermarsi alla prima
-    riga che trova: con questo elenco sa in anticipo che quel nome va cercato
-    piu' volte.
 
-    Si contano i repository, non le righe: lo stesso nome ripetuto dentro un
-    solo repository non e' un omonimo.
+def _parole(codice: Any, tabella: dict[str, str]) -> Optional[str]:
+    """Un codice di ARS in parole; quello che la tabella non conosce passa com'e'."""
+    if not isinstance(codice, str) or not codice:
+        return None
+    return tabella.get(codice.lower(), codice)
+
+
+def _federazione(repositories: Any) -> tuple[dict[Any, Any], dict[Any, dict]]:
+    """Da `repositories/all`: di quale federato e' membro ogni repository, e i
+    dati di ogni repository per id.
+
+    Un membro porta l'id del suo federato in `federated_repository_data.id`.
     """
-    dove: dict[str, set] = {}
-    for riga in repository:
-        for voce in riga["backup"]:
-            if voce.get("nome"):
-                dove.setdefault(voce["nome"], set()).add(riga["nome"])
-    return {nome: len(posti) for nome, posti in dove.items() if len(posti) > 1}
+    membro_di: dict[Any, Any] = {}
+    per_id: dict[Any, dict] = {}
+    for riga in _righe(repositories):
+        per_id[riga.get("id")] = riga
+        federato = (riga.get("federated_repository_data") or {}).get("id")
+        if federato is not None and federato != riga.get("id"):
+            membro_di[riga.get("id")] = federato
+    return membro_di, per_id
 
 
-def _soglia(soglia_ore: float) -> float:
-    """24 e non 24.0: il modello scrive la soglia come la legge."""
-    return int(soglia_ore) if float(soglia_ore).is_integer() else soglia_ore
+def _stato_repository(riga: dict, dati: Optional[dict]) -> Optional[str]:
+    """Lo stato in parole, o None se e' ok o non si sa. `backup-status` lo
+    chiama `status`, `repositories/all` `state`."""
+    codice = riga.get("status") or riga.get("state") or (dati or {}).get("state")
+    if not isinstance(codice, str) or codice.lower() == "ok":
+        return None
+    return _parole(codice, STATI_REPOSITORY)
 
 
-def stato(data: Any, ora: Optional[datetime] = None, soglia_ore: float = 24.0) -> dict:
+def _descrivi(riga: dict, dati: Optional[dict]) -> dict:
+    """Nome, tipo e stato di un repository; il tipo solo se e' un federato, lo
+    stato solo se non e' ok."""
+    voce: dict[str, Any] = {"nome": riga.get("name")}
+    tipo = riga.get("type") or (dati or {}).get("type")
+    if isinstance(tipo, str) and tipo.lower() == FEDERATO:
+        voce["tipo"] = "federato"
+    stato_repository = _stato_repository(riga, dati)
+    if stato_repository is not None:
+        voce["stato"] = stato_repository
+    return voce
+
+
+def stato(
+    data: Any,
+    ora: Optional[datetime] = None,
+    soglia_ore: float = 24.0,
+    repositories: Any = None,
+) -> dict:
     """La risposta di `backup-status`: i repository con dentro i loro backup.
 
+    `repositories` e' la risposta di `repositories/all`, l'unica che dice di
+    quale federato e' membro un repository. Con quella, un membro senza backup
+    sta solo dentro il suo federato, in `membri`, e non conta fra i
+    repository ne' fra quelli vuoti: i suoi backup sono quelli del federato.
+    Senza (ARS non l'ha data), i repository restano tutti in fila, com'erano.
+
     In testa, prima dell'elenco, i totali e quello che va segnalato: quanti
-    backup non sono aggiornati secondo `soglia_ore` e i repository vuoti.
-    Quali siano lo dice `non_aggiornato` nelle loro righe, dentro l'elenco
-    completo: un elenco a parte il modello lo riporterebbe al posto di quello
-    completo, o in aggiunta.
+    backup non sono aggiornati secondo `soglia_ore`, quanti non sono
+    accessibili, i repository vuoti e quelli non accessibili. Quali backup
+    siano lo dicono `non_aggiornato` e `non_accessibile` nelle loro righe,
+    dentro l'elenco completo: un elenco a parte il modello lo riporterebbe al
+    posto di quello completo, o in aggiunta.
     """
     ora = ora or adesso()
+    membro_di, per_id = _federazione(repositories)
     letti = [(riga, _righe(riga.get("backups"))) for riga in _righe(data)]
-    repository = [
-        {
-            "nome": riga.get("name"),
-            # Il totale conta le righe di ARS, anche quelle poi unite.
-            "totale_backup": len(backup),
-            "backup": _backup_uniti(backup, ora, soglia_ore, riga.get("name")),
-        }
-        for riga, backup in letti
-    ]
+    nomi_per_id = {riga.get("id"): riga.get("name") for riga, _ in letti}
+    # Il federato di ogni membro, se anche il federato e' fra i repository.
+    federato = {
+        riga.get("id"): membro_di[riga.get("id")]
+        for riga, _ in letti
+        if membro_di.get(riga.get("id")) in nomi_per_id
+    }
+    membri: dict[Any, list[dict]] = {}
+    for riga, _ in letti:
+        if riga.get("id") in federato:
+            membri.setdefault(federato[riga.get("id")], []).append(
+                _descrivi(riga, per_id.get(riga.get("id")))
+            )
+
+    repository = []
+    non_accessibili = []
+    for riga, backup in letti:
+        voce = _descrivi(riga, per_id.get(riga.get("id")))
+        if voce.get("stato") == STATI_REPOSITORY["inaccessible"]:
+            segnalato = {"nome": voce["nome"]}
+            if riga.get("id") in federato:
+                segnalato["membro_di"] = nomi_per_id[federato[riga.get("id")]]
+            non_accessibili.append(segnalato)
+        # Un membro senza backup sta solo dentro il federato; uno con dei
+        # backup suoi resta anche in fila, perche' non si perdano.
+        if riga.get("id") in federato and not backup:
+            continue
+        if riga.get("id") in membri:
+            voce["membri"] = membri[riga.get("id")]
+        voce.update(
+            {
+                # Il totale conta le righe di ARS, anche quelle poi unite.
+                "totale_backup": len(backup),
+                "backup": _backup_uniti(backup, ora, soglia_ore, riga.get("name")),
+            }
+        )
+        repository.append(voce)
+
     vuoti = [r["nome"] for r in repository if r["totale_backup"] == 0]
     risposta = {
         "ora_attuale": ora.isoformat(timespec="seconds"),
@@ -295,15 +391,10 @@ def stato(data: Any, ora: Optional[datetime] = None, soglia_ore: float = 24.0) -
         {
             "repository_con_backup": len(repository) - len(vuoti),
             "repository_vuoti": vuoti,
-            "soglia_ore": _soglia(soglia_ore),
-            # Come `totale_backup`, conta le righe di ARS, anche quelle unite.
-            "totale_non_aggiornati": sum(
-                voce.get("righe", 1)
-                for riga in repository
-                for voce in riga["backup"]
-                if voce.get("non_aggiornato")
-            ),
-            "nomi_in_piu_repository": _omonimi(repository),
+            "repository_non_accessibili": non_accessibili,
+            # Come `totale_backup`, contano le righe di ARS, anche quelle unite.
+            "totale_non_aggiornati": _contate(repository, "non_aggiornato"),
+            "totale_non_accessibili": _contate(repository, "non_accessibile"),
             "repository": repository,
         }
     )
@@ -345,26 +436,53 @@ def cerca_repository(data: Any, nome: str) -> dict:
 
 
 def backup(
-    data: Any, repository: str, ora: Optional[datetime] = None, soglia_ore: float = 24.0
+    data: Any,
+    repository: str,
+    ora: Optional[datetime] = None,
+    soglia_ore: float = 24.0,
+    repositories: Any = None,
 ) -> dict:
-    """La risposta di `repositories/backups`: i backup di un repository."""
+    """La risposta di `repositories/backups`: i backup di un repository.
+
+    Da `repositories/all` vengono tipo e stato del repository, il federato di
+    cui e' membro (`membro_di`: i backup stanno li') o i suoi membri.
+    """
     ora = ora or adesso()
     righe = _righe(data)
-    risposta = {
+    risposta: dict[str, Any] = {
         "ora_attuale": ora.isoformat(timespec="seconds"),
         "repository": repository,
-        "totale_backup": len(righe),
     }
+    membro_di, per_id = _federazione(repositories)
+    dati = next((r for r in per_id.values() if r.get("name") == repository), None)
+    if dati is not None:
+        descritto = _descrivi(dati, None)
+        for chiave in ("tipo", "stato"):
+            if chiave in descritto:
+                risposta[chiave] = descritto[chiave]
+        federato = per_id.get(membro_di.get(dati.get("id")))
+        if federato is not None:
+            risposta["membro_di"] = federato.get("name")
+        membri = [
+            _descrivi(per_id[membro], None)
+            for membro, padre in membro_di.items()
+            if padre == dati.get("id") and membro in per_id
+        ]
+        if membri:
+            risposta["membri"] = membri
+    risposta["totale_backup"] = len(righe)
     per_piattaforma = _per_piattaforma(righe)
     if per_piattaforma:
         risposta["backup_per_piattaforma"] = per_piattaforma
-    risposta["soglia_ore"] = _soglia(soglia_ore)
     risposta["backup"] = _backup_uniti(righe, ora, soglia_ore, repository)
     return risposta
 
 
 def per_nome(
-    data: Any, nome: str, ora: Optional[datetime] = None, soglia_ore: float = 24.0
+    data: Any,
+    nome: str,
+    ora: Optional[datetime] = None,
+    soglia_ore: float = 24.0,
 ) -> dict:
     """Da `backup-status`, i soli backup col nome cercato, divisi per repository.
 
@@ -404,12 +522,7 @@ def per_nome(
         "cercato": nome.strip(),
         "nomi_trovati": sorted(scelti),
         "totale_backup": sum(r["totale_backup"] for r in repository),
-        "soglia_ore": _soglia(soglia_ore),
-        "totale_non_aggiornati": sum(
-            voce.get("righe", 1)
-            for riga in repository
-            for voce in riga["backup"]
-            if voce.get("non_aggiornato")
-        ),
+        "totale_non_aggiornati": _contate(repository, "non_aggiornato"),
+        "totale_non_accessibili": _contate(repository, "non_accessibile"),
         "repository": repository,
     }
