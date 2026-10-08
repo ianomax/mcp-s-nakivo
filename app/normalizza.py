@@ -7,8 +7,9 @@ segnalare. Per questo qui l'eta' dell'ultimo punto di ripristino e' gia'
 calcolata e scritta anche in lettere (`da_quanto`), piattaforma e tipo di ogni
 backup sono in parole, i totali sono contati, anche per piattaforma, le righe
 identiche sono unite con il loro numero, i backup non aggiornati e quelli non
-accessibili sono segnati riga per riga e contati, i repository vuoti e
-quelli non accessibili sono gia' scelti, i membri di un repository federato stanno dentro il federato, e
+accessibili sono segnati riga per riga e contati, ogni riga ha gia' il suo
+pallino colorato, i repository vuoti e quelli non accessibili sono gia'
+scelti, i membri di un repository federato stanno dentro il federato, e
 `data` si accetta sia come lista sia come oggetto con chiavi "0", "1", ...
 
 Funzioni pure: prendono la risposta di ARS e l'istante, e restituiscono un
@@ -65,6 +66,11 @@ STATI_REPOSITORY = {
     "inaccessible": "non accessibile",
     "none": "sconosciuto",
 }
+
+# Il pallino di ogni riga, con i colori della dashboard di ARS. Serve solo a
+# verificare quelli del rapportino, che il modello scrive con le stesse emoji:
+# il client lo toglie prima che il risultato arrivi al modello.
+VERDE, GIALLO, ROSSO = "🟢", "🟡", "🔴"
 
 
 def adesso() -> datetime:
@@ -233,10 +239,21 @@ def _vecchio(ore_fa: Optional[float], soglia_ore: float) -> bool:
     return ore_fa is None or ore_fa >= soglia_ore
 
 
+def _pallino(voce: dict, soglia_ore: float, soglia_rosso_ore: float) -> str:
+    """Rosso se il backup non e' accessibile, non ha punti o ha almeno
+    `soglia_rosso_ore`; giallo se non e' aggiornato; verde altrimenti."""
+    if voce.get("non_accessibile") or _vecchio(voce["ore_fa"], soglia_rosso_ore):
+        return ROSSO
+    if _vecchio(voce["ore_fa"], soglia_ore):
+        return GIALLO
+    return VERDE
+
+
 def _backup_uniti(
     righe: list[dict],
     ora: datetime,
     soglia_ore: float,
+    soglia_rosso_ore: float,
     repository: Optional[str] = None,
 ) -> list[dict]:
     """Le righe di backup di un repository, con quelle identiche unite.
@@ -244,9 +261,13 @@ def _backup_uniti(
     `righe` c'e' solo quando vale piu' di 1, e `non_aggiornato` e
     `non_accessibile` solo quando sono veri, cosi' le righe senza niente da
     dire restano come sono. Il confronto con le soglie lo fa il server:
-    nell'elenco completo il modello riconosce i backup da segnalare senza
-    confrontare le date da se'. Non accessibile e' solo il backup per cui ARS
-    manda `isAccessible` falso: senza il campo non si segna niente.
+    nell'elenco completo il modello riconosce i backup da segnalare, e il
+    colore di ognuno, senza confrontare le date da se'. Non accessibile e'
+    solo il backup per cui ARS manda `isAccessible` falso: senza il campo non
+    si segna niente.
+
+    Il pallino e' la prima chiave della riga, come e' il primo segno della
+    riga scritta nel rapportino.
     """
     elenco = []
     for riga, quante in _uniche(righe):
@@ -257,7 +278,7 @@ def _backup_uniti(
             voce["non_aggiornato"] = True
         if riga.get("isAccessible") is False:
             voce["non_accessibile"] = True
-        elenco.append(voce)
+        elenco.append({"pallino": _pallino(voce, soglia_ore, soglia_rosso_ore), **voce})
     return elenco
 
 
@@ -319,8 +340,9 @@ def _descrivi(riga: dict, dati: Optional[dict]) -> dict:
 def stato(
     data: Any,
     ora: Optional[datetime] = None,
-    soglia_ore: float = 24.0,
+    soglia_ore: float = 48.0,
     repositories: Any = None,
+    soglia_rosso_ore: float = 96.0,
 ) -> dict:
     """La risposta di `backup-status`: i repository con dentro i loro backup.
 
@@ -335,7 +357,8 @@ def stato(
     accessibili, i repository vuoti e quelli non accessibili. Quali backup
     siano lo dicono `non_aggiornato` e `non_accessibile` nelle loro righe,
     dentro l'elenco completo: un elenco a parte il modello lo riporterebbe al
-    posto di quello completo, o in aggiunta.
+    posto di quello completo, o in aggiunta. Il pallino di ogni riga si
+    colora con `soglia_ore` e `soglia_rosso_ore`.
     """
     ora = ora or adesso()
     membro_di, per_id = _federazione(repositories)
@@ -373,7 +396,7 @@ def stato(
             {
                 # Il totale conta le righe di ARS, anche quelle poi unite.
                 "totale_backup": len(backup),
-                "backup": _backup_uniti(backup, ora, soglia_ore, riga.get("name")),
+                "backup": _backup_uniti(backup, ora, soglia_ore, soglia_rosso_ore, riga.get("name")),
             }
         )
         repository.append(voce)
@@ -439,8 +462,9 @@ def backup(
     data: Any,
     repository: str,
     ora: Optional[datetime] = None,
-    soglia_ore: float = 24.0,
+    soglia_ore: float = 48.0,
     repositories: Any = None,
+    soglia_rosso_ore: float = 96.0,
 ) -> dict:
     """La risposta di `repositories/backups`: i backup di un repository.
 
@@ -474,7 +498,7 @@ def backup(
     per_piattaforma = _per_piattaforma(righe)
     if per_piattaforma:
         risposta["backup_per_piattaforma"] = per_piattaforma
-    risposta["backup"] = _backup_uniti(righe, ora, soglia_ore, repository)
+    risposta["backup"] = _backup_uniti(righe, ora, soglia_ore, soglia_rosso_ore, repository)
     return risposta
 
 
@@ -482,7 +506,8 @@ def per_nome(
     data: Any,
     nome: str,
     ora: Optional[datetime] = None,
-    soglia_ore: float = 24.0,
+    soglia_ore: float = 48.0,
+    soglia_rosso_ore: float = 96.0,
 ) -> dict:
     """Da `backup-status`, i soli backup col nome cercato, divisi per repository.
 
@@ -514,7 +539,7 @@ def per_nome(
                 {
                     "nome": riga.get("name"),
                     "totale_backup": len(suoi),
-                    "backup": _backup_uniti(suoi, ora, soglia_ore, riga.get("name")),
+                    "backup": _backup_uniti(suoi, ora, soglia_ore, soglia_rosso_ore, riga.get("name")),
                 }
             )
     return {

@@ -51,7 +51,8 @@ async def ciclo_di_vita(_server: FastMCP):
     logger.info(
         f"Server MCP Nakivo avviato. ARS: {settings.ARS_BASE_URL}. "
         f"Ora locale: {normalizza.adesso().isoformat(timespec='minutes')}. "
-        f"Backup non aggiornati oltre {settings.SOGLIA_BACKUP_ORE:g} ore"
+        f"Backup non aggiornati oltre {settings.SOGLIA_BACKUP_ORE:g} ore, "
+        f"rossi oltre {settings.SOGLIA_BACKUP_ROSSO_ORE:g}"
     )
     yield
     await ars_client.chiudi()
@@ -213,6 +214,7 @@ async def nakivo_stato_backup(company_id: int) -> dict:
         data,
         soglia_ore=settings.SOGLIA_BACKUP_ORE,
         repositories=repositories,
+        soglia_rosso_ore=settings.SOGLIA_BACKUP_ROSSO_ORE,
     )
 
 
@@ -248,6 +250,7 @@ async def nakivo_backup_per_nome(company_id: int, nome: str) -> dict:
             data,
             nome,
             soglia_ore=settings.SOGLIA_BACKUP_ORE,
+            soglia_rosso_ore=settings.SOGLIA_BACKUP_ROSSO_ORE,
         )
 
 
@@ -300,6 +303,7 @@ async def nakivo_backup_del_repository(company_id: int, repository: str) -> dict
         trovato["nome"],
         soglia_ore=settings.SOGLIA_BACKUP_ORE,
         repositories=elenco,
+        soglia_rosso_ore=settings.SOGLIA_BACKUP_ROSSO_ORE,
     )
 
 

@@ -23,7 +23,8 @@ services:
       - ARS_API_TOKEN=${ARS_API_TOKEN}
       - ARS_TIMEOUT=${ARS_TIMEOUT:-120}
       - MCP_API_KEY=${MCP_API_KEY}
-      - SOGLIA_BACKUP_ORE=${SOGLIA_BACKUP_ORE:-24}
+      - SOGLIA_BACKUP_ORE=${SOGLIA_BACKUP_ORE:-48}
+      - SOGLIA_BACKUP_ROSSO_ORE=${SOGLIA_BACKUP_ROSSO_ORE:-96}
       # Dentro il container si ascolta su tutte le interfacce: la rete Docker
       # e' gia' il confine.
       - HOST=0.0.0.0

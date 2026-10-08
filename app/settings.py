@@ -1,5 +1,5 @@
 # app/settings.py
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,8 +20,11 @@ class Settings(BaseSettings):
     MCP_API_KEY: str = Field(min_length=8)
 
     # Un backup il cui ultimo punto di ripristino e' piu' vecchio di tante ore
-    # e' segnato come non aggiornato.
-    SOGLIA_BACKUP_ORE: float = Field(default=24.0, gt=0)
+    # e' segnato come non aggiornato, col pallino giallo; da
+    # SOGLIA_BACKUP_ROSSO_ORE in su il pallino e' rosso. Di default sono le
+    # soglie della dashboard di ARS: verde fino a 2 giorni, giallo fino a 4.
+    SOGLIA_BACKUP_ORE: float = Field(default=48.0, gt=0)
+    SOGLIA_BACKUP_ROSSO_ORE: float = Field(default=96.0, gt=0)
 
     HOST: str = "0.0.0.0"
     PORT: int = 8010
@@ -32,6 +35,15 @@ class Settings(BaseSettings):
         env_file_encoding='utf-8',
         extra='ignore'
     )
+
+    @model_validator(mode="after")
+    def _rosso_dopo_giallo(self) -> "Settings":
+        if self.SOGLIA_BACKUP_ROSSO_ORE <= self.SOGLIA_BACKUP_ORE:
+            raise ValueError(
+                "SOGLIA_BACKUP_ROSSO_ORE deve essere maggiore di SOGLIA_BACKUP_ORE: "
+                "il rosso viene dopo il giallo"
+            )
+        return self
 
 
 settings = Settings()
