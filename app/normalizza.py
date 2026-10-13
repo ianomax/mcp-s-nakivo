@@ -67,9 +67,9 @@ STATI_REPOSITORY = {
     "none": "sconosciuto",
 }
 
-# Il pallino di ogni riga, con i colori della dashboard di ARS. Serve solo a
-# verificare quelli del rapportino, che il modello scrive con le stesse emoji:
-# il client lo toglie prima che il risultato arrivi al modello.
+# Il pallino di ogni riga, con i colori della dashboard di ARS: il modello lo
+# mette in testa alla riga, in chat e nel rapportino, e il client verifica
+# quelli del rapportino.
 VERDE, GIALLO, ROSSO = "🟢", "🟡", "🔴"
 
 

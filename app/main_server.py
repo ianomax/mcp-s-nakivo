@@ -138,11 +138,11 @@ async def nakivo_stato_backup(company_id: int) -> dict:
     aggiornati. Come si elencano, in questa e in ogni altra risposta: in
     Markdown, divisi per repository, con il nome del repository come titolo
     di quinto livello («##### nome») e sotto un elenco puntato con un backup
-    per riga, nella forma «nome, tipo:
-    ultimo punto, da quanto fa». Un backup sta su una riga sola, senza
-    sottopunti. Le righe con `non_aggiornato` finiscono con «non aggiornato»
-    in grassetto, quelle con `non_accessibile` con «non accessibile» in
-    grassetto, e quelle con tutti e due con tutti e due: non ripeterle in un
+    per riga, nella forma «pallino nome, tipo: ultimo punto, da quanto fa»,
+    col `pallino` della riga così com'è. Un backup sta su una riga sola,
+    senza sottopunti. Le righe con `non_aggiornato` finiscono con «non
+    aggiornato» in grassetto, quelle con `non_accessibile` con «non
+    accessibile» in grassetto, e quelle con tutti e due con tutti e due: non ripeterle in un
     elenco a parte. Sotto un repository vuoto c'è una riga sola: «nessun
     backup».
 
@@ -237,11 +237,12 @@ async def nakivo_backup_per_nome(company_id: int, nome: str) -> dict:
 
     Elencali in Markdown, sotto il nome del repository come titolo di quinto
     livello («##### nome»), in un elenco puntato con un backup per riga, nella
-    forma «nome, tipo: ultimo punto, da quanto fa». Un backup sta su una riga
-    sola, senza sottopunti. Le righe con `non_aggiornato` (ultimo punto troppo
-    vecchio, o nessuno) finiscono con «non aggiornato» in grassetto, quelle con
-    `non_accessibile` (Nakivo non riesce ad accedere al backup) con «non
-    accessibile» in grassetto.
+    forma «pallino nome, tipo: ultimo punto, da quanto fa», col `pallino` della
+    riga così com'è. Un backup sta su una riga sola, senza sottopunti. Le
+    righe con `non_aggiornato` (ultimo punto troppo vecchio, o nessuno)
+    finiscono con «non aggiornato» in grassetto, quelle con `non_accessibile`
+    (Nakivo non riesce ad accedere al backup) con «non accessibile» in
+    grassetto.
     """
     logger.info(f"backup per nome {nome!r}, azienda {company_id}")
     with _traduci_errori():
@@ -270,10 +271,11 @@ async def nakivo_backup_del_repository(company_id: int, repository: str) -> dict
 
     Elenca i backup in Markdown, sotto il nome del repository come titolo di
     quinto livello («##### nome»), in un elenco puntato con un backup per
-    riga, nella forma «nome, tipo: ultimo punto, da quanto fa». Un backup sta
-    su una riga sola, senza sottopunti. Le righe con `non_aggiornato` (ultimo
-    punto troppo vecchio, o nessuno) finiscono con «non aggiornato» in grassetto,
-    quelle con `non_accessibile` con «non accessibile» in grassetto.
+    riga, nella forma «pallino nome, tipo: ultimo punto, da quanto fa», col
+    `pallino` della riga così com'è. Un backup sta su una riga sola, senza
+    sottopunti. Le righe con `non_aggiornato` (ultimo punto troppo vecchio, o
+    nessuno) finiscono con «non aggiornato» in grassetto, quelle con
+    `non_accessibile` con «non accessibile» in grassetto.
 
     La risposta dice anche `tipo` del repository, se è un federato, e il suo
     `stato`, se non è a posto. Se ha `membro_di`, il repository fa parte di un repository
